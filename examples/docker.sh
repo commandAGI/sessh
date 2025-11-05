@@ -8,10 +8,11 @@ CONTAINER_NAME="sessh-test-$(date +%s)"
 IMAGE="ubuntu:22.04"
 ALIAS="docker-test"
 SSH_PORT="${SSH_PORT:-2222}"
+SESSH_BIN="${SESSH_BIN:-sessh}"
 
 cleanup() {
   echo "Cleaning up..."
-  sessh close "$ALIAS" "root@localhost" "$SSH_PORT" 2>/dev/null || true
+  PORT="$SSH_PORT" "$SESSH_BIN" close "$ALIAS" "root@localhost" "$SSH_PORT" 2>/dev/null || true
   docker stop "$CONTAINER_NAME" 2>/dev/null || true
   docker rm "$CONTAINER_NAME" 2>/dev/null || true
 }
@@ -62,24 +63,24 @@ done
 
 # Open session
 echo "Opening sessh session..."
-sessh open "$ALIAS" "root@localhost" "$SSH_PORT"
+PORT="$SSH_PORT" "$SESSH_BIN" open "$ALIAS" "root@localhost" "$SSH_PORT"
 
 # Run commands
 echo "Running commands..."
-sessh run "$ALIAS" "root@localhost" "$SSH_PORT" -- "echo 'Hello from Docker container!'"
-sessh run "$ALIAS" "root@localhost" "$SSH_PORT" -- "apt-get update -qq"
-sessh run "$ALIAS" "root@localhost" "$SSH_PORT" -- "which tmux"
-sessh run "$ALIAS" "root@localhost" "$SSH_PORT" -- "cd /tmp && pwd && echo 'State persisted across commands!'"
+PORT="$SSH_PORT" "$SESSH_BIN" run "$ALIAS" "root@localhost" -- "echo 'Hello from Docker container!'"
+PORT="$SSH_PORT" "$SESSH_BIN" run "$ALIAS" "root@localhost" -- "apt-get update -qq"
+PORT="$SSH_PORT" "$SESSH_BIN" run "$ALIAS" "root@localhost" -- "which tmux"
+PORT="$SSH_PORT" "$SESSH_BIN" run "$ALIAS" "root@localhost" -- "cd /tmp && pwd && echo 'State persisted across commands!'"
 
 # Get logs
 echo ""
 echo "=== Session Logs ==="
-sessh logs "$ALIAS" "root@localhost" "$SSH_PORT" 50
+PORT="$SSH_PORT" "$SESSH_BIN" logs "$ALIAS" "root@localhost" 50
 
 # Check status
 echo ""
 echo "=== Session Status ==="
-sessh status "$ALIAS" "root@localhost" "$SSH_PORT"
+PORT="$SSH_PORT" "$SESSH_BIN" status "$ALIAS" "root@localhost" "$SSH_PORT"
 
 echo ""
 echo "Example completed successfully!"

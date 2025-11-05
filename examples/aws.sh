@@ -10,14 +10,26 @@ export KEY_NAME="${AWS_KEY_NAME:-}"
 export SECURITY_GROUP="${AWS_SECURITY_GROUP:-}"
 export AMI_ID="${AWS_AMI_ID:-}"  # e.g., ubuntu/images/h-u-22.04-amd64-server-*
 ALIAS="aws-agent"
+SESSH_BIN="${SESSH_BIN:-sessh}"
 
 # Check prerequisites
-command -v aws >/dev/null 2>&1 || { echo "Error: AWS CLI is required but not installed." >&2; exit 1; }
+AWS_CMD="${AWS_CMD:-aws}"
+if ! command -v "$AWS_CMD" >/dev/null 2>&1; then
+  # Try Windows AWS CLI path if on WSL
+  if [ -f "/mnt/c/Program Files/Amazon/AWSCLIV2/aws.exe" ]; then
+    AWS_CMD="/mnt/c/Program Files/Amazon/AWSCLIV2/aws.exe"
+  elif [ -f "/mnt/c/Program Files (x86)/Amazon/AWSCLIV2/aws.exe" ]; then
+    AWS_CMD="/mnt/c/Program Files (x86)/Amazon/AWSCLIV2/aws.exe"
+  else
+    echo "Error: AWS CLI is required but not installed." >&2
+    exit 1
+  fi
+fi
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed." >&2; exit 1; }
 
 # Get default values if not set
 if [[ -z "$KEY_NAME" ]]; then
-  KEY_NAME=$(aws ec2 describe-key-pairs --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || echo "")
+  KEY_NAME=$("$AWS_CMD" ec2 describe-key-pairs --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || echo "")
   if [[ -z "$KEY_NAME" ]]; then
     echo "Error: AWS_KEY_NAME must be set or at least one key pair must exist." >&2
     exit 1
@@ -25,18 +37,22 @@ if [[ -z "$KEY_NAME" ]]; then
 fi
 
 if [[ -z "$AMI_ID" ]]; then
-  AMI_ID=$(aws ec2 describe-images \
+  AMI_ID=$("$AWS_CMD" ec2 describe-images \
     --owners 099720109477 \
     --filters "Name=name,Values=ubuntu/images/h2-ssd/ubuntu-jammy-22.04-amd64-server-*" \
               "Name=state,Values=available" \
-    --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+    --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" \
     --output text \
-    --region "$AWS_REGION")
+    --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [[ -z "$AMI_ID" ]] || [[ "$AMI_ID" == "None" ]]; then
+    echo "Error: Failed to find Ubuntu 22.04 AMI. Please set AWS_AMI_ID manually." >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "$SECURITY_GROUP" ]]; then
   # Try to find a security group that allows SSH
-  SECURITY_GROUP=$(aws ec2 describe-security-groups \
+  SECURITY_GROUP=$("$AWS_CMD" ec2 describe-security-groups \
     --filters "Name=ip-permission.from-port,Values=22" \
               "Name=ip-permission.to-port,Values=22" \
               "Name=ip-permission.protocol,Values=tcp" \
@@ -56,11 +72,11 @@ IP=""
 cleanup() {
   echo "Cleaning up..."
   if [[ -n "$ALIAS" ]] && [[ -n "$IP" ]]; then
-    sessh close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
+    "$SESSH_BIN" close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
   fi
   if [[ -n "$INSTANCE_ID" ]]; then
     echo "Terminating EC2 instance: $INSTANCE_ID"
-    aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" >/dev/null 2>&1 || true
+    "$AWS_CMD" ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -75,7 +91,7 @@ echo ""
 
 # Launch instance
 echo "Launching EC2 instance..."
-LAUNCH_OUTPUT=$(aws ec2 run-instances \
+LAUNCH_OUTPUT=$("$AWS_CMD" ec2 run-instances \
   --image-id "$AMI_ID" \
   --instance-type "$INSTANCE_TYPE" \
   --key-name "$KEY_NAME" \
@@ -89,12 +105,12 @@ echo "Instance ID: $INSTANCE_ID"
 
 # Wait for instance to be running
 echo "Waiting for instance to be running..."
-aws ec2 wait instance-running --instance-ids "$INSTANCE_ID" --region "$AWS_REGION"
+"$AWS_CMD" ec2 wait instance-running --instance-ids "$INSTANCE_ID" --region "$AWS_REGION"
 
 # Get IP address
 echo "Getting instance IP address..."
 for i in {1..30}; do
-  IP=$(aws ec2 describe-instances \
+  IP=$("$AWS_CMD" ec2 describe-instances \
     --instance-ids "$INSTANCE_ID" \
     --query 'Reservations[0].Instances[0].PublicIpAddress' \
     --output text \
@@ -124,26 +140,26 @@ done
 
 # Open session
 echo "Opening sessh session..."
-sessh open "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" open "$ALIAS" "ubuntu@${IP}"
 
 # Install dependencies and run workload
 echo "Installing dependencies..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get update -qq"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get update -qq"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux"
 
 echo "Running workload..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import sys; print(f\"Python version: {sys.version}\")'"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import sys; print(f\"Python version: {sys.version}\")'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
 
 # Get logs
 echo ""
 echo "=== Session Logs ==="
-sessh logs "$ALIAS" "ubuntu@${IP}" 100
+"$SESSH_BIN" logs "$ALIAS" "ubuntu@${IP}" 100
 
 # Check status
 echo ""
 echo "=== Session Status ==="
-sessh status "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" status "$ALIAS" "ubuntu@${IP}"
 
 echo ""
 echo "Example completed successfully!"

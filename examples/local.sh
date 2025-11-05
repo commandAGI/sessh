@@ -10,7 +10,8 @@ ALIAS="local-test"
 
 cleanup() {
   echo "Cleaning up..."
-  sessh close "$ALIAS" "${USER}@${HOST}" 2>/dev/null || true
+  SESSH_BIN="${SESSH_BIN:-sessh}"
+  "$SESSH_BIN" close "$ALIAS" "${USER}@${HOST}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -26,24 +27,25 @@ fi
 
 # Open session
 echo "Opening sessh session..."
-sessh open "$ALIAS" "${USER}@${HOST}"
+SESSH_BIN="${SESSH_BIN:-sessh}"
+"$SESSH_BIN" open "$ALIAS" "${USER}@${HOST}"
 
 # Run commands
 echo "Running commands..."
-sessh run "$ALIAS" "${USER}@${HOST}" -- "echo 'Hello from sessh!'"
-sessh run "$ALIAS" "${USER}@${HOST}" -- "pwd"
-sessh run "$ALIAS" "${USER}@${HOST}" -- "whoami"
-sessh run "$ALIAS" "${USER}@${HOST}" -- "cd /tmp && pwd && echo 'State persisted!'"
+"$SESSH_BIN" run "$ALIAS" "${USER}@${HOST}" -- "echo 'Hello from sessh!'"
+"$SESSH_BIN" run "$ALIAS" "${USER}@${HOST}" -- "pwd"
+"$SESSH_BIN" run "$ALIAS" "${USER}@${HOST}" -- "whoami"
+"$SESSH_BIN" run "$ALIAS" "${USER}@${HOST}" -- "cd /tmp && pwd && echo 'State persisted!'"
 
 # Get logs
 echo ""
 echo "=== Session Logs ==="
-sessh logs "$ALIAS" "${USER}@${HOST}" 50
+"$SESSH_BIN" logs "$ALIAS" "${USER}@${HOST}" 50
 
 # Check status
 echo ""
 echo "=== Session Status ==="
-sessh status "$ALIAS" "${USER}@${HOST}"
+"$SESSH_BIN" status "$ALIAS" "${USER}@${HOST}"
 
 echo ""
 echo "Example completed successfully!"

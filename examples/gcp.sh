@@ -11,6 +11,7 @@ export IMAGE_PROJECT="${GCP_IMAGE_PROJECT:-ubuntu-os-cloud}"
 export IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-ubuntu-2204-lts}"
 INSTANCE_NAME="sessh-example-$(date +%s)"
 ALIAS="gcp-agent"
+SESSH_BIN="${SESSH_BIN:-sessh}"
 
 # Check prerequisites
 command -v gcloud >/dev/null 2>&1 || { echo "Error: gcloud CLI is required but not installed." >&2; exit 1; }
@@ -28,7 +29,7 @@ IP=""
 cleanup() {
   echo "Cleaning up..."
   if [[ -n "$ALIAS" ]] && [[ -n "$IP" ]]; then
-    sessh close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
+    "$SESSH_BIN" close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
   fi
   if [[ -n "$INSTANCE_NAME" ]]; then
     echo "Deleting GCP instance: $INSTANCE_NAME"
@@ -103,26 +104,26 @@ done
 
 # Open session
 echo "Opening sessh session..."
-sessh open "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" open "$ALIAS" "ubuntu@${IP}"
 
 # Install dependencies and run workload
 echo "Installing dependencies..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get update -qq"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get update -qq"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux"
 
 echo "Running workload..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import sys; print(f\"Python version: {sys.version}\")'"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import sys; print(f\"Python version: {sys.version}\")'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
 
 # Get logs
 echo ""
 echo "=== Session Logs ==="
-sessh logs "$ALIAS" "ubuntu@${IP}" 100
+"$SESSH_BIN" logs "$ALIAS" "ubuntu@${IP}" 100
 
 # Check status
 echo ""
 echo "=== Session Status ==="
-sessh status "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" status "$ALIAS" "ubuntu@${IP}"
 
 echo ""
 echo "Example completed successfully!"

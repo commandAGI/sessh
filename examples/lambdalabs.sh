@@ -9,13 +9,14 @@ export LAMBDA_REGION="${LAMBDA_REGION:-us-west-1}"
 export LAMBDA_INSTANCE_TYPE="${LAMBDA_INSTANCE_TYPE:-gpu_1x_a10}"
 export LAMBDA_SSH_KEY="${LAMBDA_SSH_KEY:-}"
 ALIAS="lambda-agent"
+SESSH_BIN="${SESSH_BIN:-sessh}"
 
 # Check prerequisites
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required but not installed." >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "Error: curl is required but not installed." >&2; exit 1; }
 
 if [[ -z "$LAMBDA_API_KEY" ]]; then
-  echo "Error: LAMBDA_KEY environment variable must be set with your Lambda Labs API key." >&2
+  echo "Error: LAMBDA_API_KEY environment variable must be set with your Lambda Labs API key." >&2
   exit 1
 fi
 
@@ -30,7 +31,7 @@ IP=""
 cleanup() {
   echo "Cleaning up..."
   if [[ -n "$ALIAS" ]] && [[ -n "$IP" ]]; then
-    sessh close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
+    "$SESSH_BIN" close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
   fi
   if [[ -n "$INSTANCE_ID" ]]; then
     echo "Terminating Lambda Labs instance: $INSTANCE_ID"
@@ -95,26 +96,26 @@ done
 
 # Open session
 echo "Opening sessh session..."
-sessh open "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" open "$ALIAS" "ubuntu@${IP}"
 
 # Install dependencies and run workload
 echo "Installing dependencies..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "pip install torch torchvision"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import torch; print(f"PyTorch version: {torch.__version__}")'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "pip install torch torchvision"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "python3 -c 'import torch; print(f"PyTorch version: {torch.__version__}")'"
 
 echo "Running workload..."
-sessh run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
-sessh run "$ALIAS" "ubuntu@${IP}" -- "nvidia-smi || echo 'GPU check (may not be available in all instance types)'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
+"$SESSH_BIN" run "$ALIAS" "ubuntu@${IP}" -- "nvidia-smi || echo 'GPU check (may not be available in all instance types)'"
 
 # Get logs
 echo ""
 echo "=== Session Logs ==="
-sessh logs "$ALIAS" "ubuntu@${IP}" 200
+"$SESSH_BIN" logs "$ALIAS" "ubuntu@${IP}" 200
 
 # Check status
 echo ""
 echo "=== Session Status ==="
-sessh status "$ALIAS" "ubuntu@${IP}"
+"$SESSH_BIN" status "$ALIAS" "ubuntu@${IP}"
 
 echo ""
 echo "Example completed successfully!"

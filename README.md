@@ -232,7 +232,11 @@ MIT License - see LICENSE file for details.
 
 ## Examples
 
+Comprehensive examples are available in the [`examples/`](examples/) directory. Each example demonstrates launching infrastructure, using sessh to manage persistent sessions, and cleaning up resources.
+
 ### Lambda Labs GPU Training
+
+Complete example of launching a Lambda Labs GPU instance, training a model, and terminating:
 
 ```bash
 #!/bin/bash
@@ -241,36 +245,187 @@ set -euo pipefail
 export LAMBDA_API_KEY="sk_live_..."
 export LAMBDA_REGION="us-west-1"
 export LAMBDA_INSTANCE_TYPE="gpu_1x_h100_sxm5"
+export LAMBDA_SSH_KEY="laptop-ed25519"
+
+ALIAS="lambda-agent"
+INSTANCE_ID=""
+IP=""
+
+cleanup() {
+  echo "Cleaning up..."
+  if [[ -n "$ALIAS" ]] && [[ -n "$IP" ]]; then
+    sessh close "$ALIAS" "ubuntu@${IP}" 2>/dev/null || true
+  fi
+  if [[ -n "$INSTANCE_ID" ]]; then
+    curl -su "$LAMBDA_API_KEY:" \
+      -H "content-type: application/json" \
+      -X POST https://cloud.lambdalabs.com/api/v1/instance-operations/terminate \
+      -d "{\"instance_ids\": [\"$INSTANCE_ID\"]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 # Launch instance
-response=$(curl -su "$LAMBDA_API_KEY:" \
+echo "Launching Lambda Labs instance..."
+RESPONSE=$(curl -su "$LAMBDA_API_KEY:" \
   -H "content-type: application/json" \
   -X POST https://cloud.lambdalabs.com/api/v1/instance-operations/launch \
-  -d "{\"region_name\":\"$LAMBDA_REGION\",\"instance_type_name\":\"$LAMBDA_INSTANCE_TYPE\",\"ssh_key_names\":[\"laptop-ed25519\"],\"quantity\":1}")
+  -d "{\"region_name\":\"$LAMBDA_REGION\",\"instance_type_name\":\"$LAMBDA_INSTANCE_TYPE\",\"ssh_key_names\":[\"$LAMBDA_SSH_KEY\"],\"quantity\":1}")
 
-iid=$(echo "$response" | jq -r '.data.instance_ids[0]')
+INSTANCE_ID=$(echo "$RESPONSE" | jq -r '.data.instance_ids[0]')
+echo "Instance ID: $INSTANCE_ID"
 
 # Wait for IP
+echo "Waiting for instance IP address..."
 until ip=$(curl -su "$LAMBDA_API_KEY:" \
   https://cloud.lambdalabs.com/api/v1/instances | \
-  jq -r ".data[] | select(.id==\"$iid\") | .ip") && [[ "$ip" != "null" ]]; do
+  jq -r ".data[] | select(.id==\"$INSTANCE_ID\") | .ip") && [[ "$ip" != "null" ]]; do
+  sleep 5
+done
+IP="$ip"
+echo "Instance IP: $IP"
+
+# Wait for SSH to be ready
+echo "Waiting for SSH to be ready..."
+for i in {1..60}; do
+  if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "ubuntu@${IP}" "echo ready" 2>/dev/null; then
+    break
+  fi
   sleep 5
 done
 
-echo "Instance ready at $ip"
+# Use sessh to train model
+sessh open "$ALIAS" "ubuntu@${IP}"
+sessh run "$ALIAS" "ubuntu@${IP}" -- "pip install torch torchvision"
+sessh run "$ALIAS" "ubuntu@${IP}" -- "python train.py"
+sessh logs "$ALIAS" "ubuntu@${IP}" 400
 
-# Train model
-sessh open agent "ubuntu@$ip"
-sessh run agent "ubuntu@$ip" -- "pip install torch torchvision"
-sessh run agent "ubuntu@$ip" -- "python train.py"
-sessh logs agent "ubuntu@$ip" 400
+# Cleanup happens automatically via trap
+```
+
+**Run the full example:**
+```bash
+export LAMBDA_API_KEY="sk_live_..."
+export LAMBDA_SSH_KEY="my-ssh-key-name"
+./examples/lambdalabs.sh
+```
+
+### AWS EC2 Example
+
+Complete example of launching an EC2 instance, using sessh, and terminating:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+export AWS_REGION="${AWS_REGION:-us-east-1}"
+export INSTANCE_TYPE="${INSTANCE_TYPE:-t2.micro}"
+export AWS_KEY_NAME="${AWS_KEY_NAME:-}"
+export AWS_SECURITY_GROUP="${AWS_SECURITY_GROUP:-}"
+ALIAS="aws-agent"
+
+# Launch instance
+LAUNCH_OUTPUT=$(aws ec2 run-instances \
+  --image-id ami-xxxxx \
+  --instance-type "$INSTANCE_TYPE" \
+  --key-name "$AWS_KEY_NAME" \
+  --security-group-ids "$AWS_SECURITY_GROUP" \
+  --region "$AWS_REGION" \
+  --output json)
+
+INSTANCE_ID=$(echo "$LAUNCH_OUTPUT" | jq -r '.Instances[0].InstanceId')
+
+# Wait for instance to be running
+aws ec2 wait instance-running --instance-ids "$INSTANCE_ID" --region "$AWS_REGION"
+
+# Get IP address
+IP=$(aws ec2 describe-instances \
+  --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' \
+  --output text \
+  --region "$AWS_REGION")
+
+# Wait for SSH to be ready
+for i in {1..60}; do
+  if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "ubuntu@${IP}" "echo ready" 2>/dev/null; then
+    break
+  fi
+  sleep 5
+done
+
+# Use sessh
+sessh open "$ALIAS" "ubuntu@${IP}"
+sessh run "$ALIAS" "ubuntu@${IP}" -- "sudo apt-get update -qq"
+sessh run "$ALIAS" "ubuntu@${IP}" -- "python3 train.py"
+sessh logs "$ALIAS" "ubuntu@${IP}" 400
 
 # Terminate
-curl -su "$LAMBDA_API_KEY:" \
-  -H "content-type: application/json" \
-  -X POST https://cloud.lambdalabs.com/api/v1/instance-operations/terminate \
-  -d "{\"instance_ids\": [\"$iid\"]}"
+sessh close "$ALIAS" "ubuntu@${IP}"
+aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$AWS_REGION"
 ```
+
+**Run the full example:**
+```bash
+export AWS_REGION=us-east-1
+export AWS_KEY_NAME=my-key
+export AWS_SECURITY_GROUP=sg-xxxxx
+./examples/aws.sh
+```
+
+### Local/Localhost Example
+
+Simple example for using sessh with a local machine or VM:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HOST="${1:-localhost}"
+USER="${USER:-$(whoami)}"
+ALIAS="local-test"
+
+cleanup() {
+  sessh close "$ALIAS" "${USER}@${HOST}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Open session
+sessh open "$ALIAS" "${USER}@${HOST}"
+
+# Run commands (state persists between commands)
+sessh run "$ALIAS" "${USER}@${HOST}" -- "echo 'Hello from sessh!'"
+sessh run "$ALIAS" "${USER}@${HOST}" -- "pwd"
+sessh run "$ALIAS" "${USER}@${HOST}" -- "cd /tmp && pwd && echo 'State persisted!'"
+
+# Get logs
+sessh logs "$ALIAS" "${USER}@${HOST}" 50
+
+# Check status
+sessh status "$ALIAS" "${USER}@${HOST}"
+```
+
+**Run the full example:**
+```bash
+./examples/local.sh localhost
+```
+
+### Other Examples
+
+Full examples are available for all major cloud providers:
+
+- **Docker**: [`examples/docker.sh`](examples/docker.sh) - Use sessh with a Docker container
+- **Google Cloud Platform**: [`examples/gcp.sh`](examples/gcp.sh) - Launch GCP instance, use sessh, terminate
+- **Azure**: [`examples/azure.sh`](examples/azure.sh) - Launch Azure VM, use sessh, terminate
+- **DigitalOcean**: [`examples/digitalocean.sh`](examples/digitalocean.sh) - Launch droplet, use sessh, terminate
+- **Docker Compose**: [`examples/docker-compose.sh`](examples/docker-compose.sh) - Use sessh with Docker Compose services
+
+All examples follow the same pattern:
+1. Launch infrastructure (instance/container)
+2. Wait for SSH to be ready
+3. Open sessh session
+4. Run commands (state persists between commands)
+5. Fetch logs
+6. Clean up resources
 
 ### JSON Mode for Automation
 

@@ -1,7 +1,7 @@
 # Example: Using sessh with AWS EC2 (PowerShell version)
 # This demonstrates launching an EC2 instance, using sessh to train a model, and terminating it
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"  # Allow script to continue despite non-fatal errors
 
 # Configuration
 $env:AWS_REGION = if ($env:AWS_REGION) { $env:AWS_REGION } else { "us-east-1" }
@@ -50,8 +50,9 @@ if (-not (Get-Command jq -ErrorAction SilentlyContinue) -and -not (Get-Command p
 
 # Get default values if not set
 if ([string]::IsNullOrEmpty($KEY_NAME)) {
-    $keyPair = & $AWS_CMD ec2 describe-key-pairs --query 'KeyPairs[0].KeyName' --output text --region $env:AWS_REGION 2>$null
-    if ($keyPair -and $keyPair -ne "None") {
+    $keyPair = & $AWS_CMD ec2 describe-key-pairs --query 'KeyPairs[0].KeyName' --output text --region $env:AWS_REGION 2>&1
+    $keyPair = ($keyPair | Where-Object { $_ -notmatch "^DEBUG" -and $_ -notmatch "^INFO" }).Trim()
+    if ($keyPair -and $keyPair -ne "None" -and $LASTEXITCODE -eq 0) {
         $KEY_NAME = $keyPair
     } else {
         Write-Error "Error: AWS_KEY_NAME must be set or at least one key pair must exist."
@@ -60,17 +61,20 @@ if ([string]::IsNullOrEmpty($KEY_NAME)) {
 }
 
 if ([string]::IsNullOrEmpty($AMI_ID)) {
-    $amiQuery = & $AWS_CMD ec2 describe-images `
-        --owners 099720109477 `
-        --filters "Name=name,Values=ubuntu/images/h2-ssd/ubuntu-jammy-22.04-amd64-server-*" "Name=state,Values=available" `
-        --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" `
-        --output text `
-        --region $env:AWS_REGION 2>$null
+    # Use AWS Systems Manager Parameter Store to get the latest Ubuntu 22.04 LTS AMI
+    # This is a public parameter that doesn't require owner permissions
+    $amiQuery = & $AWS_CMD ssm get-parameter `
+        --name "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" `
+        --region $env:AWS_REGION `
+        --query 'Parameter.Value' `
+        --output text 2>&1
+    $amiQuery = ($amiQuery | Where-Object { $_ -notmatch "^DEBUG" -and $_ -notmatch "^INFO" }).Trim()
     
-    if ($amiQuery -and $amiQuery -ne "None") {
+    if ($amiQuery -and $amiQuery -ne "None" -and $LASTEXITCODE -eq 0) {
         $AMI_ID = $amiQuery
     } else {
-        Write-Error "Error: Failed to find Ubuntu 22.04 AMI. Please set AWS_AMI_ID manually."
+        Write-Error "Error: Failed to get Ubuntu 22.04 AMI from AWS Parameter Store. Please set AWS_AMI_ID manually."
+        Write-Host "AWS CLI error output: $amiQuery"
         exit 1
     }
 }
@@ -80,9 +84,10 @@ if ([string]::IsNullOrEmpty($SECURITY_GROUP)) {
         --filters "Name=ip-permission.from-port,Values=22" "Name=ip-permission.to-port,Values=22" "Name=ip-permission.protocol,Values=tcp" `
         --query 'SecurityGroups[0].GroupId' `
         --output text `
-        --region $env:AWS_REGION 2>$null
+        --region $env:AWS_REGION 2>&1
+    $sgQuery = ($sgQuery | Where-Object { $_ -notmatch "^DEBUG" -and $_ -notmatch "^INFO" }).Trim()
     
-    if ($sgQuery -and $sgQuery -ne "None") {
+    if ($sgQuery -and $sgQuery -ne "None" -and $LASTEXITCODE -eq 0) {
         $SECURITY_GROUP = $sgQuery
     } else {
         Write-Error "Error: AWS_SECURITY_GROUP must be set or a security group allowing SSH must exist."
@@ -162,27 +167,36 @@ try {
     Write-Host "Waiting for SSH to be ready..."
     $maxAttempts = 60
     $attempt = 0
-    while ($attempt -lt $maxAttempts) {
-        $sshTest = ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "ubuntu@${IP}" "echo ready" 2>$null
+    $sshReady = $false
+    while ($attempt -lt $maxAttempts -and -not $sshReady) {
+        $sshTest = ssh.exe -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=NUL "ubuntu@${IP}" "echo ready" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
+            $sshReady = $true
             break
         }
         Start-Sleep -Seconds 5
         $attempt++
+        if ($attempt % 10 -eq 0) {
+            Write-Host "Still waiting for SSH... (attempt $attempt/$maxAttempts)"
+        }
+    }
+    if (-not $sshReady) {
+        Write-Error "SSH server did not become ready in time."
+        exit 1
     }
 
     # Open session
     Write-Host "Opening sessh session..."
-    & $SESSH_BIN open $ALIAS "ubuntu@${IP}"
+    & $SESSH_BIN open $ALIAS "ubuntu@${IP}" 2>&1 | Out-Null
 
     # Install dependencies and run workload
     Write-Host "Installing dependencies..."
-    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "sudo apt-get update -qq"
-    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux"
+    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "sudo apt-get update -qq" 2>&1 | Out-Null
+    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "sudo apt-get install -y -qq python3-pip tmux" 2>&1 | Out-Null
 
     Write-Host "Running workload..."
-    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "python3 -c `"import sys; print(f'Python version: {sys.version}')`""
-    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'"
+    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "python3 -c `"import sys; print(f'Python version: {sys.version}')`"" 2>&1 | Out-Null
+    & $SESSH_BIN run $ALIAS "ubuntu@${IP}" -- "cd /tmp && pwd && echo 'Working directory: $(pwd)' && echo 'State persisted across commands!'" 2>&1 | Out-Null
 
     # Get logs
     Write-Host ""

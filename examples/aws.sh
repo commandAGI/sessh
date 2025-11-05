@@ -37,15 +37,15 @@ if [[ -z "$KEY_NAME" ]]; then
 fi
 
 if [[ -z "$AMI_ID" ]]; then
-  AMI_ID=$("$AWS_CMD" ec2 describe-images \
-    --owners 099720109477 \
-    --filters "Name=name,Values=ubuntu/images/h2-ssd/ubuntu-jammy-22.04-amd64-server-*" \
-              "Name=state,Values=available" \
-    --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" \
-    --output text \
-    --region "$AWS_REGION" 2>/dev/null || echo "")
+  # Use AWS Systems Manager Parameter Store to get the latest Ubuntu 22.04 LTS AMI
+  # This is a public parameter that doesn't require owner permissions
+  AMI_ID=$("$AWS_CMD" ssm get-parameter \
+    --name "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" \
+    --region "$AWS_REGION" \
+    --query 'Parameter.Value' \
+    --output text 2>/dev/null || echo "")
   if [[ -z "$AMI_ID" ]] || [[ "$AMI_ID" == "None" ]]; then
-    echo "Error: Failed to find Ubuntu 22.04 AMI. Please set AWS_AMI_ID manually." >&2
+    echo "Error: Failed to get Ubuntu 22.04 AMI from AWS Parameter Store. Please set AWS_AMI_ID manually." >&2
     exit 1
   fi
 fi

@@ -31,20 +31,48 @@ Sessh combines **SSH ControlMaster** (persistent connections) with **remote tmux
 
 ## Installation
 
+### Linux/macOS (Bash)
+
 1. Copy `sessh` to your PATH and make it executable:
    ```bash
    cp sessh /usr/local/bin/
    chmod +x /usr/local/bin/sessh
    ```
 
-2. Ensure prerequisites are installed:
-   - `ssh` (OpenSSH client)
-   - `tmux` (on remote hosts)
-   - `jq` (optional, for JSON parsing)
-   - `autossh` (optional, for auto-reconnection)
+### Windows (PowerShell)
+
+1. Copy `sessh.ps1` to a directory in your PATH (e.g., your PowerShell profile directory or a custom scripts folder):
+   ```powershell
+   # Option 1: Add to PowerShell profile directory
+   Copy-Item sessh.ps1 $PROFILE\..\sessh.ps1
+   
+   # Option 2: Create a scripts directory and add to PATH
+   New-Item -ItemType Directory -Path "$env:USERPROFILE\Scripts" -Force
+   Copy-Item sessh.ps1 "$env:USERPROFILE\Scripts\sessh.ps1"
+   # Add to PATH via System Properties > Environment Variables
+   ```
+
+2. Create an alias or function for easier invocation:
+   ```powershell
+   # Add to your PowerShell profile ($PROFILE)
+   function sessh {
+       & "$env:USERPROFILE\Scripts\sessh.ps1" $args
+   }
+   ```
+
+### Prerequisites
+
+- `ssh` (OpenSSH client)
+  - Linux/macOS: Usually pre-installed
+  - Windows: Built into Windows 10/11, or install via OpenSSH for Windows
+- `tmux` (on remote hosts only - not required locally)
+- `jq` (optional, for JSON parsing in bash)
+- `autossh` (optional, for auto-reconnection in bash)
+- PowerShell 5.1+ (for Windows PowerShell version)
 
 ## Usage
 
+### Linux/macOS (Bash)
 ```bash
 # Open a persistent session
 sessh open agent ubuntu@203.0.113.10
@@ -65,14 +93,59 @@ sessh attach agent ubuntu@203.0.113.10
 sessh close agent ubuntu@203.0.113.10
 ```
 
+### Windows (PowerShell)
+```powershell
+# Open a persistent session
+sessh.ps1 open agent ubuntu@203.0.113.10
+# Or if you have the function alias:
+sessh open agent ubuntu@203.0.113.10
+
+# Run a command in the session
+sessh run agent ubuntu@203.0.113.10 -- "conda activate foo && python train.py"
+
+# Get logs
+sessh logs agent ubuntu@203.0.113.10 400
+
+# Check status
+sessh status agent ubuntu@203.0.113.10
+
+# Attach interactively (Ctrl+B, D to detach)
+sessh attach agent ubuntu@203.0.113.10
+
+# Close session
+sessh close agent ubuntu@203.0.113.10
+```
+
 ## Environment Variables
 
-- `SESSH_JSON=1` - Enable JSON output mode
-- `SESSH_SSH=autossh` - Use autossh for auto-reconnection
-- `SESSH_IDENTITY=~/.ssh/id_ed25519` - Specify SSH private key
-- `SESSH_PROXYJUMP=user@bastion` - Use ProxyJump
-- `SESSH_PERSIST=8h` - ControlMaster persistence duration
-- `SESSH_KEEPALIVE=30` - Server alive interval (seconds)
+### Linux/macOS (Bash)
+```bash
+export SESSH_JSON=1
+export SESSH_SSH=autossh
+export SESSH_IDENTITY=~/.ssh/id_ed25519
+export SESSH_PROXYJUMP=user@bastion
+export SESSH_PERSIST=8h
+export SESSH_KEEPALIVE=30
+```
+
+### Windows (PowerShell)
+```powershell
+$env:SESSH_JSON = "1"
+$env:SESSH_SSH = "autossh"
+$env:SESSH_IDENTITY = "$env:USERPROFILE\.ssh\id_ed25519"
+$env:SESSH_PROXYJUMP = "user@bastion"
+$env:SESSH_PERSIST = "8h"
+$env:SESSH_KEEPALIVE = "30"
+```
+
+### All Platforms
+
+- `SESSH_JSON=1` / `$env:SESSH_JSON="1"` - Enable JSON output mode
+- `SESSH_SSH=autossh` / `$env:SESSH_SSH="autossh"` - Use autossh for auto-reconnection (bash only)
+- `SESSH_IDENTITY=~/.ssh/id_ed25519` / `$env:SESSH_IDENTITY="..."` - Specify SSH private key
+- `SESSH_PROXYJUMP=user@bastion` / `$env:SESSH_PROXYJUMP="..."` - Use ProxyJump
+- `SESSH_PERSIST=8h` / `$env:SESSH_PERSIST="8h"` - ControlMaster persistence duration
+- `SESSH_KEEPALIVE=30` / `$env:SESSH_KEEPALIVE="30"` - Server alive interval (seconds)
 
 ## How It Works
 
@@ -84,7 +157,7 @@ When you run `sessh open agent ubuntu@host`:
 - Opens a persistent **master connection** to the remote host
 - This connection stays alive for 8 hours (configurable)
 - All subsequent commands **reuse** this connection (instant, no handshake)
-- Control socket stored in ramfs (`/run/user/$UID`) when available for speed
+- Control socket stored in ramfs (`/run/user/$UID` on Linux, `$LOCALAPPDATA/sessh` on Windows) when available for speed
 
 ### 2. Remote Tmux Session
 
@@ -216,9 +289,11 @@ sessh attach dev "user@dev-server"  # Resume where you left off
 ## Cross-Platform
 
 Works on:
-- Linux (primary)
-- macOS (with Homebrew SSH/tmux)
-- Windows (via WSL or Git Bash)
+- **Linux** (primary, bash script)
+- **macOS** (bash script, with Homebrew SSH/tmux)
+- **Windows** (PowerShell script `sessh.ps1`, uses built-in OpenSSH)
+  - Native PowerShell support via `sessh.ps1`
+  - Also works via WSL or Git Bash using the bash script
 
 ## Related Projects
 
@@ -406,18 +481,35 @@ sessh status "$ALIAS" "${USER}@${HOST}"
 
 **Run the full example:**
 ```bash
+# Linux/macOS (bash)
 ./examples/local.sh localhost
+```
+
+```powershell
+# Windows (PowerShell)
+.\examples\local.ps1 localhost
 ```
 
 ### Other Examples
 
 Full examples are available for all major cloud providers:
 
+**Linux/macOS (Bash):**
 - **Docker**: [`examples/docker.sh`](examples/docker.sh) - Use sessh with a Docker container
 - **Google Cloud Platform**: [`examples/gcp.sh`](examples/gcp.sh) - Launch GCP instance, use sessh, terminate
 - **Azure**: [`examples/azure.sh`](examples/azure.sh) - Launch Azure VM, use sessh, terminate
 - **DigitalOcean**: [`examples/digitalocean.sh`](examples/digitalocean.sh) - Launch droplet, use sessh, terminate
 - **Docker Compose**: [`examples/docker-compose.sh`](examples/docker-compose.sh) - Use sessh with Docker Compose services
+
+**Windows (PowerShell):**
+- **AWS EC2**: [`examples/aws.ps1`](examples/aws.ps1) - Launch EC2 instance, use sessh, terminate
+- **Azure**: [`examples/azure.ps1`](examples/azure.ps1) - Launch Azure VM, use sessh, terminate
+- **DigitalOcean**: [`examples/digitalocean.ps1`](examples/digitalocean.ps1) - Launch droplet, use sessh, terminate
+- **Docker**: [`examples/docker.ps1`](examples/docker.ps1) - Use sessh with a Docker container
+- **Docker Compose**: [`examples/docker-compose.ps1`](examples/docker-compose.ps1) - Use sessh with Docker Compose services
+- **Google Cloud Platform**: [`examples/gcp.ps1`](examples/gcp.ps1) - Launch GCP instance, use sessh, terminate
+- **Lambda Labs**: [`examples/lambdalabs.ps1`](examples/lambdalabs.ps1) - Launch Lambda Labs GPU instance, use sessh, terminate
+- **Local**: [`examples/local.ps1`](examples/local.ps1) - PowerShell version for localhost/local VMs
 
 All examples follow the same pattern:
 1. Launch infrastructure (instance/container)
@@ -473,9 +565,12 @@ session=$(echo "$status" | jq -r '.session')
 - Ensure you're using the same alias and host for all commands
 
 **Control socket errors**
-- Check socket directory permissions: `ls -la /run/user/$UID/`
-- Set custom directory: `SESSH_CTRL_DIR=/tmp sessh open ...`
-- Clean up old sockets: `rm -f /run/user/$UID/sessh_*` (if stuck)
+- **Linux/macOS**: Check socket directory permissions: `ls -la /run/user/$UID/`
+- **Windows**: Check socket directory: `$env:LOCALAPPDATA\sessh`
+- Set custom directory: `SESSH_CTRL_DIR=/tmp sessh open ...` (Linux/macOS) or `$env:SESSH_CTRL_DIR="C:\temp"; sessh open ...` (Windows)
+- Clean up old sockets:
+  - Linux/macOS: `rm -f /run/user/$UID/sessh_*`
+  - Windows: `Remove-Item "$env:LOCALAPPDATA\sessh\sessh_*"` (if stuck)
 
 ## Contributing
 

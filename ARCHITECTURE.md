@@ -12,7 +12,7 @@ Sessh exists to solve one specific problem: **AI agents like Cursor can only run
 
 2. **Single-Command Interface**: Every operation must be a single command that terminates immediately. The CLI returns immediately; the persistent shell lives on in tmux on the remote host.
 
-3. **Real Implementations**: We use real POSIX tools (SSH ControlMaster, tmux) rather than building abstractions. When OpenSSH and tmux solve the problem, we use them.
+3. **Real Implementations**: We use real tools (SSH ControlMaster, tmux) rather than building abstractions. When OpenSSH and tmux solve the problem, we use them. On Windows, we use PowerShell's native capabilities to interface with OpenSSH.
 
 4. **Autonomous by Default**: The entire goal is enabling autonomous workflows. Launch infrastructure → SSH → train models → terminate, all without human intervention.
 
@@ -64,11 +64,18 @@ ssh -o ControlPath=... ubuntu@host "command"  # Execute via master
 
 #### Control Socket Location
 
-We prioritize ramfs for speed:
+We prioritize fast storage for speed:
 
+**Linux/macOS (Bash script):**
 1. `/run/user/$UID` (systemd user runtime, ramfs)
 2. `$XDG_RUNTIME_DIR` (XDG standard, usually ramfs)
 3. `/tmp` (fallback, disk-backed)
+
+**Windows (PowerShell script):**
+1. `$env:LOCALAPPDATA\sessh` (user-specific application data, fast SSD)
+2. `$env:TEMP` (system temp directory, fallback)
+
+Note: SSH on Windows requires forward slashes in ControlPath even for Windows paths, so we convert backslashes to forward slashes.
 
 Socket format: `sessh_%r@%h:%p` (user@host:port)
 
@@ -192,8 +199,10 @@ We use modern, secure SSH defaults:
 
 ### Control Socket Security
 
-- Control sockets stored in user-owned directories (`/run/user/$UID`)
-- Unix socket permissions prevent other users from hijacking connections
+- **Linux/macOS**: Control sockets stored in user-owned directories (`/run/user/$UID`)
+  - Unix socket permissions prevent other users from hijacking connections
+- **Windows**: Control sockets stored in user-specific directory (`$env:LOCALAPPDATA\sessh`)
+  - Windows file permissions prevent other users from accessing
 - Each connection uses unique socket path (`%r@%h:%p`)
 
 ### Identity Isolation
@@ -219,10 +228,15 @@ This makes debugging easier: if something breaks, you know immediately.
 - First connection: ~1-2 seconds (SSH handshake)
 - Subsequent commands: ~10-50ms (socket multiplexing)
 
-### Ramfs Control Sockets
+### Control Socket Performance
 
+**Linux/macOS:**
 - Disk-backed (`/tmp`): ~100-200ms per command
 - Ramfs (`/run/user/$UID`): ~10-50ms per command
+
+**Windows:**
+- `LOCALAPPDATA` (typically SSD): ~20-50ms per command
+- `TEMP` (disk-backed): ~50-100ms per command
 
 ### Tmux Overhead
 
@@ -235,7 +249,10 @@ This makes debugging easier: if something breaks, you know immediately.
 2. **ControlMaster persistence**: Connections expire after 8h (configurable)
 3. **No interactive stdin**: Can't send interactive input (use `sessh attach` for that)
 4. **Command output delay**: Commands run asynchronously; use `logs` to check output
-5. **Platform-specific**: Control sockets work best on Unix-like systems (Linux, macOS)
+5. **Platform-specific considerations**:
+   - **Control sockets**: Work best on Unix-like systems (Linux, macOS) with ramfs
+   - **Windows**: Uses `LOCALAPPDATA` for control sockets (disk-backed, but fast on SSDs)
+   - **autossh**: Not available on Windows PowerShell version (use standard `ssh` instead)
 
 ## Future Considerations
 
@@ -253,11 +270,30 @@ This makes debugging easier: if something breaks, you know immediately.
 - **Interactive CLI modes**: The whole point is non-interactive single commands
 - **Password authentication**: Security risk, use keys
 
+## Platform-Specific Implementation Notes
+
+### PowerShell Implementation (Windows)
+
+The PowerShell version (`sessh.ps1`) maintains feature parity with the bash version while adapting to Windows-specific requirements:
+
+1. **Control Socket Paths**: Uses Windows paths (`$env:LOCALAPPDATA\sessh`) but converts to forward slashes for SSH compatibility
+2. **Process Execution**: Uses PowerShell's `&` operator and `Start-Process` for background processes
+3. **JSON Output**: Uses PowerShell's built-in `ConvertTo-Json` instead of external `jq`
+4. **Environment Variables**: Uses `$env:VAR` syntax instead of `$VAR`
+5. **Argument Parsing**: Manual argument parsing to handle positional parameters correctly
+6. **Error Handling**: Uses PowerShell's `$ErrorActionPreference` and `try/catch` where appropriate
+
+### Key Differences from Bash Version
+
+- **autossh**: Not typically available on Windows, so PowerShell version uses standard `ssh` (autossh can be installed but isn't required)
+- **Control Socket Creation**: Automatically creates the `sessh` directory in `LOCALAPPDATA` if it doesn't exist
+- **Path Handling**: Converts Windows backslashes to forward slashes for SSH ControlPath (SSH on Windows requires forward slashes)
+
 ## Related Technologies
 
 - **SSH ControlMaster**: [OpenSSH Multiplexing](https://en.wikibooks.org/wiki/OpenSSH/Cookbook/Multiplexing)
 - **tmux**: [tmux Manual](https://man.openbsd.org/tmux)
-- **autossh**: [autossh Manual](https://man.openbsd.org/autossh)
+- **autossh**: [autossh Manual](https://man.openbsd.org/autossh) (Linux/macOS only)
 
 ## References
 

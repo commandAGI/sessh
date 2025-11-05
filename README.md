@@ -91,6 +91,13 @@ sessh attach agent ubuntu@203.0.113.10
 
 # Close session
 sessh close agent ubuntu@203.0.113.10
+
+# Send individual keys (for interactive TUI programs)
+sessh keys agent ubuntu@203.0.113.10 -- "j"
+sessh keys agent ubuntu@203.0.113.10 -- "Esc"
+
+# Read current pane state (for TUI programs)
+sessh pane agent ubuntu@203.0.113.10 50
 ```
 
 ### Windows (PowerShell)
@@ -114,6 +121,13 @@ sessh attach agent ubuntu@203.0.113.10
 
 # Close session
 sessh close agent ubuntu@203.0.113.10
+
+# Send individual keys (for interactive TUI programs)
+sessh keys agent ubuntu@203.0.113.10 -- "j"
+sessh keys agent ubuntu@203.0.113.10 -- "Esc"
+
+# Read current pane state (for TUI programs)
+sessh pane agent ubuntu@203.0.113.10 50
 ```
 
 ## Environment Variables
@@ -276,6 +290,29 @@ sessh open dev "user@dev-server"
 sessh attach dev "user@dev-server"  # Ctrl+B, D to detach
 # ... later ...
 sessh attach dev "user@dev-server"  # Resume where you left off
+```
+
+### Interactive TUI Programs
+
+Use `keys` and `pane` to interact with TUI programs like vim, nano, or htop:
+
+```bash
+# Open session and launch vim
+sessh open editor ubuntu@host
+sessh run editor ubuntu@host -- "vim file.txt"
+
+# Read the current pane to see vim's state
+sessh pane editor ubuntu@host 30
+
+# Send key sequences to navigate and edit
+sessh keys editor ubuntu@host -- "i"          # Enter insert mode
+sessh keys editor ubuntu@host -- "Hello"      # Type text
+sessh keys editor ubuntu@host -- "Esc"       # Exit insert mode
+sessh keys editor ubuntu@host -- ":wq"        # Save and quit
+sessh keys editor ubuntu@host -- "Enter"     # Confirm
+
+# Read pane again to verify
+sessh pane editor ubuntu@host 30
 ```
 
 ## Security

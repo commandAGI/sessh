@@ -22,7 +22,7 @@ if ($allArgs.Length -eq 0) {
         $HostSpec = $allArgs[2]
     }
     # For open/status/attach/close, 3rd arg (index 3) can be port
-    # For run/logs, remaining args are part of command/options
+    # For run/logs/keys/pane, remaining args are part of command/options
     if ($allArgs.Length -ge 4) {
         $arg4 = $allArgs[3]
         if ($Command -in @("open", "status", "attach", "close") -and $arg4 -match '^\d+$') {
@@ -120,6 +120,8 @@ usage:
   sessh status <alias> <user@host> [port]
   sessh attach <alias> <user@host> [port]        # interactive; not json
   sessh close  <alias> <user@host> [port]
+  sessh keys   <alias> <user@host> -- <key sequence>  # send individual keys (no Enter)
+  sessh pane   <alias> <user@host> [lines]       # read current pane state
 
 env knobs:
   `$env:SESSH_JSON=1 to emit json; `$env:SESSH_SSH=autossh; `$env:SESSH_IDENTITY=~/.ssh/id_ed25519; `$env:SESSH_PROXYJUMP=user@bastion
@@ -132,7 +134,7 @@ if (-not $Command) {
     Show-Usage
 }
 
-# Port handling: CLI arg for open/status/attach/close, env var for run/logs
+# Port handling: CLI arg for open/status/attach/close, env var for run/logs/keys/pane
 function Get-Port {
     param([string]$Cmd)
     if ($Cmd -in @("open", "status", "attach", "close")) {
@@ -142,7 +144,7 @@ function Get-Port {
             return $script:SESSH_PORT_DEFAULT
         }
     } else {
-        # run and logs use PORT env var or default
+        # run, logs, keys, and pane use PORT env var or default
         if ($env:PORT) {
             return [int]$env:PORT
         } else {
@@ -329,6 +331,78 @@ switch ($Command) {
             }
         } else {
             Write-Host "closed '$Alias' and master"
+        }
+    }
+    
+    "keys" {
+        if (-not $Alias -or -not $HostSpec) {
+            Show-Usage
+        }
+        
+        # Find -- separator
+        $dashDashIdx = -1
+        for ($i = 0; $i -lt $RemainingArgs.Length; $i++) {
+            if ($RemainingArgs[$i] -eq "--") {
+                $dashDashIdx = $i
+                break
+            }
+        }
+        
+        if ($dashDashIdx -eq -1) {
+            Write-ErrorAndExit "missing --"
+        }
+        
+        $keyParts = $RemainingArgs[($dashDashIdx + 1)..($RemainingArgs.Length - 1)]
+        if ($keyParts.Length -eq 0) {
+            Write-ErrorAndExit "empty key sequence"
+        }
+        
+        $keys = $keyParts -join " "
+        $port = Get-Port -Cmd "keys"
+        Ensure-Master -HostSpec $HostSpec -Port $port
+        $opts = Get-BaseSshOpts
+        # Escape single quotes and wrap in single quotes for tmux send-keys
+        $escapedKeys = $keys -replace "'", "'\''"
+        $tmuxCmd = "tmux has-session -t $Alias || tmux new -d -s $Alias; tmux send-keys -t $Alias '$escapedKeys'"
+        $sshArgs = $opts + @("-p", $port.ToString(), $HostSpec, $tmuxCmd)
+        & $script:SESSH_SSH $sshArgs | Out-Null
+        
+        if ($script:SESSH_JSON) {
+            $escapedKey = $keys -replace '\\', '\\' -replace '"', '\"'
+            Write-Json @{
+                ok = $true
+                op = "keys"
+                alias = $Alias
+                host = $HostSpec
+                sent = $escapedKey
+            }
+        }
+    }
+    
+    "pane" {
+        if (-not $Alias -or -not $HostSpec) {
+            Show-Usage
+        }
+        $lines = if ($RemainingArgs.Length -gt 0) { [int]$RemainingArgs[0] } else { $script:SESSH_LOG_LINES_DEFAULT }
+        $port = Get-Port -Cmd "pane"
+        Ensure-Master -HostSpec $HostSpec -Port $port
+        $opts = Get-BaseSshOpts
+        $tmuxCmd = "tmux capture-pane -pt $Alias -S -$lines -e || true"
+        $sshArgs = $opts + @("-p", $port.ToString(), $HostSpec, $tmuxCmd)
+        $out = & $script:SESSH_SSH $sshArgs 2>&1 | Out-String
+        
+        if ($script:SESSH_JSON) {
+            $escaped = $out -replace '\\', '\\' -replace '"', '\"' -replace "`r`n", '\n' -replace "`n", '\n' -replace "`r", '\r'
+            Write-Json @{
+                ok = $true
+                op = "pane"
+                alias = $Alias
+                host = $HostSpec
+                lines = $lines
+                output = $escaped.TrimEnd()
+            }
+        } else {
+            Write-Output $out
         }
     }
     

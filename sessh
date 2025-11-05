@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -------- config (env overrides) --------
+: "${SESSH_PERSIST:=8h}"          # controlmaster lifetime
+: "${SESSH_SSH:=ssh}"             # set to "autossh" to auto-restart master
+: "${SESSH_PORT_DEFAULT:=22}"
+: "${SESSH_LOG_LINES_DEFAULT:=300}"
+: "${SESSH_STRICT_HOST:=accept-new}"  # yes|no|ask|accept-new
+: "${SESSH_KEX:=sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org}"
+: "${SESSH_CIPHERS:=chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com}"
+: "${SESSH_MACS:=umac-128-etm@openssh.com,umac-64-etm@openssh.com}"
+: "${SESSH_KEEPALIVE:=30}"        # seconds
+: "${SESSH_SERVER_ALIVE_COUNT:=3}"
+: "${SESSH_CTRL_DIR:=}"
+: "${SESSH_SOCK_FMT:=sessh_%r@%h:%p}"
+: "${SESSH_JSON:=0}"              # 1 → print json responses
+: "${SESSH_IDENTITY:=}"           # path to private key, optional
+: "${SESSH_PROXYJUMP:=}"          # e.g. "bastionuser@bastion"
+
+# choose ramfs if available
+pick_ctrl_dir() {
+  if [[ -n "${SESSH_CTRL_DIR}" ]]; then echo "$SESSH_CTRL_DIR"; return; fi
+  if [[ -d "/run/user/${UID}" ]]; then echo "/run/user/${UID}"; return; fi
+  if [[ -d "${XDG_RUNTIME_DIR:-}" ]]; then echo "$XDG_RUNTIME_DIR"; return; fi
+  echo "/tmp"
+}
+
+CTRL_DIR="$(pick_ctrl_dir)"
+CTRL_PATH="$CTRL_DIR/$SESSH_SOCK_FMT"
+
+# base ssh opts
+base_ssh_opts() {
+  local opts=(
+    -o ControlPath="$CTRL_PATH"
+    -o ServerAliveInterval="$SESSH_KEEPALIVE"
+    -o ServerAliveCountMax="$SESSH_SERVER_ALIVE_COUNT"
+    -o StrictHostKeyChecking="$SESSH_STRICT_HOST"
+    -o IdentitiesOnly=yes
+    -o KexAlgorithms="$SESSH_KEX"
+    -o Ciphers="$SESSH_CIPHERS"
+    -o MACs="$SESSH_MACS"
+    -o Compression=no
+    -o TCPKeepAlive=no
+    -o NumberOfPasswordPrompts=0
+    -o PreferredAuthentications=publickey
+    -o ControlMaster=auto
+    -o ControlPersist="$SESSH_PERSIST"
+  )
+  [[ -n "$SESSH_IDENTITY" ]] && opts+=(-i "$SESSH_IDENTITY")
+  [[ -n "$SESSH_PROXYJUMP" ]] && opts+=(-J "$SESSH_PROXYJUMP")
+  printf '%s\n' "${opts[@]}"
+}
+
+ensure_master() {
+  local host="$1" port="${2:-$SESSH_PORT_DEFAULT}"
+  local opts_str
+  opts_str=$(base_ssh_opts)
+  local -a opts
+  IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+  if $SESSH_SSH "${opts[@]}" -p "$port" -O check "$host" 2>/dev/null; then
+    return 0
+  fi
+  # autossh recommended: export AUTOSSH_GATETIME=0 to connect immediately
+  if [[ "$SESSH_SSH" == "autossh" ]]; then
+    AUTOSSH_GATETIME="${AUTOSSH_GATETIME:-0}" \
+    autossh "${opts[@]}" -MNf -p "$port" "$host"
+  else
+    $SESSH_SSH "${opts[@]}" -MNf -p "$port" "$host"
+  fi
+}
+
+json() {
+  if [[ "$SESSH_JSON" == "1" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -c --arg ts "$(date -Iseconds)" '. + {ts: $ts}'
+    else
+      python3 - "$1" <<'PY'
+import sys, json, os, datetime
+try:
+    data = json.loads(sys.argv[1])
+    data["ts"] = datetime.datetime.utcnow().isoformat() + "Z"
+    print(json.dumps(data))
+except:
+    print(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + "Z", "raw": sys.argv[1]}))
+PY
+    fi
+  else
+    # no-op; caller prints plain text
+    :
+  fi
+}
+
+die() { echo "error: $*" >&2; exit 2; }
+
+usage() {
+cat >&2 <<'USAGE'
+usage:
+  sessh open   <alias> <user@host> [port]
+  sessh run    <alias> <user@host> -- <command string>
+  sessh logs   <alias> <user@host> [lines]
+  sessh status <alias> <user@host> [port]
+  sessh attach <alias> <user@host> [port]        # interactive; not json
+  sessh close  <alias> <user@host> [port]
+
+env knobs:
+  SESSH_JSON=1 to emit json; SESSH_SSH=autossh; SESSH_IDENTITY=~/.ssh/id_ed25519; SESSH_PROXYJUMP=user@bastion
+USAGE
+exit 1
+}
+
+[[ $# -lt 1 ]] && usage
+
+cmd="$1"; shift
+
+case "$cmd" in
+  open)
+    [[ $# -ge 2 ]] || usage
+    alias="$1"; host="$2"; port="${3:-$SESSH_PORT_DEFAULT}"
+    ensure_master "$host" "$port"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    $SESSH_SSH "${opts[@]}" -p "$port" "$host" "tmux has-session -t $alias 2>/dev/null || tmux new -d -s $alias"
+    if [[ "$SESSH_JSON" == "1" ]]; then
+      json '{"ok":true,"op":"open","alias":"'"$alias"'","host":"'"$host"'","port":"'"$port"'"}'
+    else
+      echo "opened '$alias' on $host ($port), controlpersist active"
+    fi
+    ;;
+
+  run)
+    [[ $# -ge 3 ]] || usage
+    alias="$1"; host="$2"
+    # find -- separator
+    shift 2
+    [[ "${1:-}" == "--" ]] || die "missing --"
+    shift
+    [[ $# -ge 1 ]] || die "empty command"
+    cmdline="$*"; port="${PORT:-$SESSH_PORT_DEFAULT}"
+    ensure_master "$host" "$port"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    $SESSH_SSH "${opts[@]}" -p "$port" "$host" \
+      "tmux has-session -t $alias || tmux new -d -s $alias; tmux send-keys -t $alias \"$cmdline\" C-m"
+    if [[ "$SESSH_JSON" == "1" ]]; then
+      json '{"ok":true,"op":"run","alias":"'"$alias"'","host":"'"$host"'","sent":"'"$(printf %q "$cmdline")"'"}'
+    fi
+    ;;
+
+  logs)
+    [[ $# -ge 2 ]] || usage
+    alias="$1"; host="$2"; lines="${3:-$SESSH_LOG_LINES_DEFAULT}"; port="${PORT:-$SESSH_PORT_DEFAULT}"
+    ensure_master "$host" "$port"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    out="$($SESSH_SSH "${opts[@]}" -p "$port" "$host" "tmux capture-pane -pt $alias -S -$lines || true")"
+    if [[ "$SESSH_JSON" == "1" ]]; then
+      # escape safely for json
+      python3 - <<PY
+import json,sys,os
+escaped = """$out""".replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+print(json.dumps({"ok": True, "op":"logs", "alias":"$alias","host":"$host","lines":$lines,"output":escaped}, ensure_ascii=False))
+PY
+    else
+      printf '%s\n' "$out"
+    fi
+    ;;
+
+  status)
+    [[ $# -ge 2 ]] || usage
+    alias="$1"; host="$2"; port="${3:-$SESSH_PORT_DEFAULT}"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    master_ok=0
+    if $SESSH_SSH "${opts[@]}" -p "$port" -O check "$host" 2>/dev/null; then master_ok=1; fi
+    sess_ok=0
+    if $SESSH_SSH "${opts[@]}" -p "$port" "$host" "tmux has-session -t $alias" 2>/dev/null; then sess_ok=1; fi
+    if [[ "$SESSH_JSON" == "1" ]]; then
+      json '{"ok":true,"op":"status","alias":"'"$alias"'","host":"'"$host"'","master":'"$master_ok"',"session":'"$sess_ok"'}'
+    else
+      echo "master:$master_ok session:$sess_ok"
+    fi
+    ;;
+
+  attach)
+    [[ $# -ge 2 ]] || usage
+    alias="$1"; host="$2"; port="${3:-$SESSH_PORT_DEFAULT}"
+    ensure_master "$host" "$port"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    exec $SESSH_SSH "${opts[@]}" -t -p "$port" "$host" "tmux attach -t $alias"
+    ;;
+
+  close)
+    [[ $# -ge 2 ]] || usage
+    alias="$1"; host="$2"; port="${3:-$SESSH_PORT_DEFAULT}"
+    opts_str=$(base_ssh_opts)
+    IFS=$'\n' read -d '' -r -a opts <<< "$opts_str" || true
+    $SESSH_SSH "${opts[@]}" -p "$port" "$host" "tmux kill-session -t $alias" >/dev/null 2>&1 || true
+    $SESSH_SSH "${opts[@]}" -p "$port" -O exit "$host" >/dev/null 2>&1 || true
+    if [[ "$SESSH_JSON" == "1" ]]; then
+      json '{"ok":true,"op":"close","alias":"'"$alias"'","host":"'"$host"'"}'
+    else
+      echo "closed '$alias' and master"
+    fi
+    ;;
+
+  *) usage ;;
+esac
+

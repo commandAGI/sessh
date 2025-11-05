@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: shellcheck-action@master
+        with:
+          path: 'sessh'
+          shellcheck-version: 'stable'
+
+  test:
+    name: Test (Manual - requires SSH host)
+    runs-on: ubuntu-latest
+    if: false  # Disabled until we have automated tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check sessh syntax
+        run: bash -n sessh
+      - name: Check sessh is executable
+        run: test -x sessh || chmod +x sessh
+

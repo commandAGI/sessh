@@ -136,6 +136,13 @@ try {
     # Wait for instance to be running
     Write-Host "Waiting for instance to be running..."
     & $AWS_CMD ec2 wait instance-running --instance-ids $INSTANCE_ID --region $env:AWS_REGION
+    
+    # Wait for instance status checks to pass
+    Write-Host "Waiting for instance status checks to pass..."
+    & $AWS_CMD ec2 wait instance-status-ok --instance-ids $INSTANCE_ID --region $env:AWS_REGION 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Instance status checks may not have passed, but continuing..."
+    }
 
     # Get IP address
     Write-Host "Getting instance IP address..."
@@ -165,22 +172,29 @@ try {
 
     # Wait for SSH to be ready
     Write-Host "Waiting for SSH to be ready..."
-    $maxAttempts = 60
+    Start-Sleep -Seconds 5  # Give instance a bit more time after status checks
+    $maxAttempts = 90  # Increased from 60 to allow more time
     $attempt = 0
     $sshReady = $false
     while ($attempt -lt $maxAttempts -and -not $sshReady) {
-        $sshTest = ssh.exe -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=NUL "ubuntu@${IP}" "echo ready" 2>&1 | Out-Null
+        $null = ssh.exe -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=NUL -o LogLevel=ERROR "ubuntu@${IP}" "echo ready" 2>&1
         if ($LASTEXITCODE -eq 0) {
             $sshReady = $true
+            Write-Host "SSH server is ready!"
             break
         }
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 3
         $attempt++
         if ($attempt % 10 -eq 0) {
             Write-Host "Still waiting for SSH... (attempt $attempt/$maxAttempts)"
+            # Try to get instance status for debugging
+            $instanceState = & $AWS_CMD ec2 describe-instances --instance-ids $INSTANCE_ID --query 'Reservations[0].Instances[0].State.Name' --output text --region $env:AWS_REGION 2>$null
+            Write-Host "Instance state: $instanceState"
         }
     }
     if (-not $sshReady) {
+        Write-Host "SSH connection test failed. Instance details:"
+        & $AWS_CMD ec2 describe-instances --instance-ids $INSTANCE_ID --query 'Reservations[0].Instances[0].[State.Name,PublicIpAddress,LaunchTime]' --output table --region $env:AWS_REGION
         Write-Error "SSH server did not become ready in time."
         exit 1
     }
